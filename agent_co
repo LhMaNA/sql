@@ -1,4 +1,16 @@
-# ============================================================================
+Bonjour Olivier,
+
+Merci pour ta demande, nous l'avons bien reçue.
+
+Nous rencontrons actuellement un problème technique sur notre outil DSS, ce qui ne nous permet malheureusement pas de traiter ta demande dans nos délais habituels. Nous mettons tout en œuvre pour rétablir la situation au plus vite. Dès que l'outil sera de nouveau opérationnel, nous prendrons en charge ta demande dans les meilleurs délais.
+
+Par ailleurs, nous avons récemment mis en place une gestion centralisée des demandes au sein de notre équipe. Afin d'assurer un meilleur suivi, une traçabilité optimale et une priorisation plus efficace, nous te remercions de bien vouloir soumettre désormais toute nouvelle demande via le formulaire dédié ci-dessous :
+
+👉 [Lien vers le formulaire]
+
+Nous te remercions pour ta compréhension et ta coopération. Si tu as la moindre question, n'hésite pas à nous contacter, nous restons à ta disposition.
+
+Bien cordialement,# ============================================================================
 # Recette Python Dataiku — Extraction COS depuis la table brute
 # Input  : table transactionnelle brute (1 ligne = 1 retrait)
 # Output : dataset agrege COS pret pour le notebook de visualisation
