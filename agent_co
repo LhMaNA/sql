@@ -1,0 +1,101 @@
+# ============================================================================
+# Analyse COS (Carte One Shot) — 2025
+# Source : table agregee fiche_identite_gab_mensuelle uniquement
+# Recette Python Dataiku — sans print
+# ============================================================================
+
+import dataiku
+import pandas as pd
+import numpy as np
+import gc
+import warnings
+warnings.filterwarnings('ignore')
+
+# ── PARAMETRES ────────────────────────────────────────────────────────────────
+DATASET_AGG    = 'fiche_identite_gab_mensuelle'  # <- input
+DATASET_SORTIE = 'cos_analyse_2025'              # <- output
+
+ANNEE          = 2025
+
+COL_AUTOMATE   = 'num_automate'
+COL_MOIS       = 'mois'
+COL_ANNEE      = 'annee'
+COL_NB_COS     = 'ret_nb_cos'
+COL_CAP_COS    = 'cap_cos_nb'
+COL_TAUX_COS   = 'taux_capture_cos_pct'
+COL_MONTANT_MOY= 'ret_montant_moyen'   # en centimes
+
+# ── 1. CHARGEMENT ─────────────────────────────────────────────────────────────
+COLONNES = [
+    COL_AUTOMATE, COL_ANNEE, COL_MOIS,
+    COL_NB_COS, COL_CAP_COS, COL_TAUX_COS, COL_MONTANT_MOY,
+]
+
+ds = dataiku.Dataset(DATASET_AGG)
+df = ds.get_dataframe(columns=COLONNES)
+
+# ── 2. FILTRAGE ───────────────────────────────────────────────────────────────
+df = df[
+    (df[COL_ANNEE] == ANNEE) &
+    (df[COL_NB_COS] > 0)
+].copy()
+
+gc.collect()
+
+# ── 3. ENRICHISSEMENT ─────────────────────────────────────────────────────────
+# Montant COS estime en euros (ret_montant_moyen en centimes x nb retraits COS)
+df['montant_cos_eur'] = (df[COL_NB_COS] * df[COL_MONTANT_MOY]) / 100.0
+
+# ── 4. AGREGATION PAR GAB ─────────────────────────────────────────────────────
+agg_gab = df.groupby(COL_AUTOMATE).agg(
+    nb_retraits_cos      = (COL_NB_COS,       'sum'),
+    montant_total_eur    = ('montant_cos_eur', 'sum'),
+    montant_moyen_eur    = ('montant_cos_eur', 'mean'),
+    nb_captures_cos      = (COL_CAP_COS,      'sum'),
+    taux_capture_cos_pct = (COL_TAUX_COS,     'mean'),
+    nb_mois_actifs       = (COL_MOIS,         'nunique'),
+).reset_index()
+
+agg_gab['montant_total_eur']    = agg_gab['montant_total_eur'].round(2)
+agg_gab['montant_moyen_eur']    = agg_gab['montant_moyen_eur'].round(2)
+agg_gab['taux_capture_cos_pct'] = agg_gab['taux_capture_cos_pct'].round(4)
+agg_gab['annee']                = ANNEE
+agg_gab['granularite']          = 'GAB'
+agg_gab['nb_gab_actifs']        = np.nan
+agg_gab['mois']                 = np.nan
+
+agg_gab = agg_gab.sort_values('nb_retraits_cos', ascending=False).reset_index(drop=True)
+
+# ── 5. AGREGATION PAR MOIS ────────────────────────────────────────────────────
+agg_mois = df.groupby(COL_MOIS).agg(
+    nb_retraits_cos      = (COL_NB_COS,       'sum'),
+    montant_total_eur    = ('montant_cos_eur', 'sum'),
+    nb_captures_cos      = (COL_CAP_COS,      'sum'),
+    taux_capture_cos_pct = (COL_TAUX_COS,     'mean'),
+    nb_gab_actifs        = (COL_AUTOMATE,     'nunique'),
+).reset_index()
+
+agg_mois['montant_total_eur']    = agg_mois['montant_total_eur'].round(2)
+agg_mois['taux_capture_cos_pct'] = agg_mois['taux_capture_cos_pct'].round(4)
+agg_mois['annee']                = ANNEE
+agg_mois['granularite']          = 'MOIS'
+agg_mois['num_automate']         = np.nan
+agg_mois['montant_moyen_eur']    = np.nan
+agg_mois['nb_mois_actifs']       = np.nan
+agg_mois = agg_mois.rename(columns={COL_MOIS: 'mois'})
+
+# ── 6. CONCAT ET ECRITURE ─────────────────────────────────────────────────────
+COLS_FINALES = [
+    'granularite', 'annee', 'num_automate', 'mois',
+    'nb_retraits_cos', 'montant_total_eur', 'montant_moyen_eur',
+    'nb_captures_cos', 'taux_capture_cos_pct',
+    'nb_mois_actifs', 'nb_gab_actifs',
+]
+
+df_final = pd.concat(
+    [agg_gab[COLS_FINALES], agg_mois[COLS_FINALES]],
+    ignore_index=True,
+)
+
+ds_sortie = dataiku.Dataset(DATASET_SORTIE)
+ds_sortie.write_with_schema(df_final)
