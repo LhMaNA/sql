@@ -1,0 +1,30 @@
+-- ═══════════════════════════════════════════════════════════════════════
+-- Retraits COS 
+-- Table transactionnelle — 1 ligne = 1 retrait
+--
+-- Double condition (pour fiabilité) :
+--   1. reseau = ''          (code réseau COS)
+--   2. OU type_carte_privative = ''  (colonne complémentaire)
+-- On garde les vrais retraits uniquement : type IN ('AXA', '60')
+-- ═══════════════════════════════════════════════════════════════════════
+
+SELECT
+    automates                                   AS num_automate,
+    COUNT(*)                                    AS nb_operations_cos,
+    SUM(montant_ope) / 100.0                    AS montant_total_eur,
+    ROUND(AVG(montant_ope) / 100.0, 2)          AS montant_moyen_eur,
+    MIN(date_operation)                         AS premiere_operation,
+    MAX(date_operation)                         AS derniere_operation,
+    COUNT(DISTINCT DATE_FORMAT(date_operation, 'yyyy-MM')) AS nb_mois_actifs
+
+FROM retraits_transactionnel
+
+WHERE YEAR(date_operation) = 2025
+  AND type IN ('AXA', '60')            -- vrais retraits uniquement (codes CRO)
+  AND (
+      reseau = ''                    -- code réseau COS
+      OR type_carte_privative = ''  -- colonne complémentaire (sécurité anti-bug)
+  )
+
+GROUP BY automates
+ORDER BY nb_operations_cos DESC;
