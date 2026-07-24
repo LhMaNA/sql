@@ -1,0 +1,59 @@
+# Procédure — Extraction VOP RVM (Dataiku DSS)
+
+**Objectif :** produire le fichier de contrôle trimestriel de facturation VOP à partir du projet VOP LBP RVM, pour répondre à une demande d'extraction sur une période donnée.
+
+---
+
+## Étape 1 — Paramétrer la période d'extraction
+
+1. Ouvrir le projet **VOP LBP RVM** dans Dataiku.
+2. Dans le flow, se rendre dans la zone **EXTRACT VOP** (en violet).
+3. En haut de cette zone, cliquer sur les **trois points (⋮)**, puis choisir **Variables**.
+4. On accède aux variables globales du projet. Deux d'entre elles nous intéressent pour l'extraction :
+   - **`date_debut`**
+   - **`date_fin`**
+
+   Ce sont ces deux variables qui permettent de filtrer le dataset sur la période demandée (ex. les dates de la demande reçue).
+
+5. Renseigner `date_debut` et `date_fin` avec les dates correspondant à la demande.
+
+> ⚠️ **Point de vigilance :** VOP a un problème connu sur la gestion des dates (format timestamp). **Toujours vérifier les dates dans la sortie des recettes** une fois le traitement terminé, pour s'assurer qu'elles correspondent bien à la période demandée.
+
+---
+
+## Étape 2 — Lancer la construction de la restitution
+
+1. Revenir à la zone **EXTRACT VOP**, dans le projet **VOP Zone use case 1**.
+2. Se rendre à la **fin du flow** et sélectionner la restitution finale : **dossier contrôle trimestriel de facturation**.
+3. Faire un **clic droit** sur ce dataset → **Build**.
+4. Choisir l'option **Build upstream**.
+5. Cocher, par précaution, la case **Update output schema** (en bas de la fenêtre).
+6. Valider avec **Build all upstream**.
+7. Attendre la fin de l'exécution du flow.
+
+---
+
+## Étape 3 — Récupérer le fichier
+
+1. Une fois l'exécution terminée, aller dans le dossier **contrôle trimestriel**.
+2. Survoler le fichier avec la souris (hover) : Dataiku propose une option de téléchargement.
+3. Télécharger le fichier.
+
+---
+
+## Étape 4 — Visualisation (facultatif)
+
+Une fois le fichier téléchargé, il est possible, si besoin, de le mettre en forme et de créer quelques graphiques pour une restitution visuelle du contrôle.
+
+---
+
+### Récapitulatif rapide
+
+| Étape | Action |
+|---|---|
+| 1 | Zone EXTRACT VOP → ⋮ → Variables → renseigner `date_debut` / `date_fin` |
+| 2 | Zone EXTRACT VOP (VOP Zone use case 1) → restitution finale → clic droit → Build → Build upstream → cocher Update output schema → Build all upstream |
+| 3 | Dossier contrôle trimestriel → hover sur le fichier → télécharger |
+| 4 (facultatif) | Mise en forme / graphiques pour la visualisation |
+
+**À ne jamais oublier :** vérifier les dates en sortie de recette avant de transmettre le fichier (bug connu de timestamp sur VOP).
