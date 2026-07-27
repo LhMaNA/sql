@@ -1,53 +1,16 @@
-# ══════════════════════════════════════════════════════════════════════════════
-# Selection des features de clustering + exclusion des valeurs extremes + normalisation
-# ══════════════════════════════════════════════════════════════════════════════
-# 'score_horaires_atypiques' retire de cette liste (retour du 27/07) : ce critere
-# est une combinaison lineaire de ret_pct_nuit et ret_pct_weekend, deja presents
-# individuellement ci-dessous - le garder revenait a compter ce signal deux fois
-# et lui donner un poids cache superieur aux autres criteres dans le calcul de
-# distance. Il reste calcule (section 4, feature engineering) pour compatibilite
-# mais n'est plus utilise dans le clustering.
-FEAT_CLUST = [
-    'ret_pct_nuit', 'ret_pct_weekend', 'pct_reseaux_etrangers',
-    'log_ret_nb_horscos', 'ret_montant_moyen', 'taux_capture_pct',
-    'cv_montant', 'concentration_reseau',
-    'zone_touristique_connue', 'zone_rurale_connue',
-]
-FEAT_CLUST = [f for f in FEAT_CLUST if f in df.columns]
-print('Features de clustering ({}) : {}'.format(len(FEAT_CLUST), FEAT_CLUST))
-
-# Exclusion des valeurs EXTREMES avant de choisir k et fitter le clustering des
-# FAMILLES : un incident ponctuel massif (taux de capture 10x la normale, montant
-# aberrant, variabilite enorme...) cree un point tres eloigne de tout qui, a lui
-# seul, peut faire basculer le diagnostic silhouette vers un decoupage "normal vs
-# incident" au lieu de reveler les vraies familles de comportement. Ces GAB
-# extremes ne sont pas perdus : ils seront quand meme rattaches a la famille dont
-# ils sont le plus proches (section 7), et rattraper par les visions 1 et 3 de
-# toute facon.
-#
-# BUG CORRIGE (retour du 27/07, 2e fois) : la 1ere version de cette exclusion ne
-# regardait que 'taux_capture_pct'. Or un petit sous-groupe de GAB reste extreme
-# sur d'AUTRES criteres (montant moyen, variabilite des montants...) et passait
-# donc a travers ce filtre - verifie sur le reseau reel : un mini-cluster de
-# quelques dizaines de GAB se detachait systematiquement a partir de k=4 et
-# empechait tout k >= 5 de passer le seuil de taille minimale. On exclut
-# desormais une observation des lors qu'elle est extreme sur AU MOINS UN des
-# criteres de clustering, pas uniquement le taux de capture.
-COLONNES_NUMERIQUES_POUR_EXCLUSION = [
-    f for f in FEAT_CLUST if f not in ('zone_touristique_connue', 'zone_rurale_connue')
-]
-masque_extreme_par_colonne = pd.DataFrame({
-    col: df[col] > df[col].quantile(0.995)
-    for col in COLONNES_NUMERIQUES_POUR_EXCLUSION
-})
-masque_population_normale = ~masque_extreme_par_colonne.any(axis=1)
-n_extremes = (~masque_population_normale).sum()
-if n_extremes > 0:
-    print('{} observations extremes exclues du CHOIX DE k (pas de l\'analyse) - '
-          'extreme sur au moins un des {} criteres (seuil : 99,5e percentile de '
-          'chaque critere).'.format(n_extremes, len(COLONNES_NUMERIQUES_POUR_EXCLUSION)))
-
-X = df[FEAT_CLUST].fillna(0)
-scaler_clust = RobustScaler()
-scaler_clust.fit(X[masque_population_normale])   # scaler ajuste sur la population normale uniquement
-X_scaled = scaler_clust.transform(X)
+print('=== DIAGNOSTIC SUR LE DATASET BRUT (avant tout traitement) ===')
+print('Nombre total de lignes :', len(df_brut))
+print()
+print('--- code_postale_emplacement ---')
+print('Type de la colonne :', df_brut['code_postale_emplacement'].dtype)
+print('Valeurs nulles (NaN) :', df_brut['code_postale_emplacement'].isnull().sum())
+print('Valeurs a zero (0 ou "0") :', (df_brut['code_postale_emplacement'].astype(str).isin(['0', '0.0'])).sum())
+print('Valeurs vides ("") :', (df_brut['code_postale_emplacement'].astype(str).str.strip() == '').sum())
+print('10 valeurs distinctes au hasard :', df_brut['code_postale_emplacement'].dropna().sample(min(10, len(df_brut))).tolist())
+print()
+for col in ['ret_montant_moyen', 'ret_pct_nuit', 'ret_pct_weekend', 'taux_capture_pct',
+            'nb_ope_reseau_jcb', 'nb_ope_reseau_amex']:
+    if col in df_brut.columns:
+        print('--- {} ---'.format(col))
+        print('  Nulles :', df_brut[col].isnull().sum(), '| A zero :', (df_brut[col] == 0).sum(),
+              '| Non-nulles et non-zero :', ((df_brut[col].notnull()) & (df_brut[col] != 0)).sum())
