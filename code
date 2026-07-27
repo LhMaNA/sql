@@ -64,6 +64,8 @@ for col in ['ret_pct_nuit', 'ret_pct_weekend', 'taux_capture_pct']:
         if n_hors_plage > 0:
             print('[ATTENTION] {} valeurs de {} hors plage plausible - ecretees.'.format(n_hors_plage, col))
         df[col] = df[col].clip(0, borne_haute)
-
+# Fige le code postal en texte, UNE FOIS POUR TOUTES, pour eviter tout melange
+# float/string qui casse les agregations numeriques en aval (ex. 9bis).
+df['code_postale_emplacement'] = df['code_postale_emplacement'].astype(str).replace('nan', None)
 print('\nDataset pret : {:,} lignes x {} colonnes | {} GAB'.format(
     df.shape[0], df.shape[1], df['num_automate'].nunique()))
