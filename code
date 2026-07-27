@@ -1,11 +1,8 @@
-Cellule 1 — "Feature engineering" (section 4)
-python
 # ══════════════════════════════════════════════════════════════════════════════
 # Feature engineering
 # ══════════════════════════════════════════════════════════════════════════════
 df['ratio_capture'] = df['cap_nb'] / (df['ret_nb_horscos'] + 1)
 df['cv_montant'] = df['ret_montant_stddev'] / (df['ret_montant_moyen'] + 0.01)
-df['score_horaires_atypiques'] = (df['ret_pct_nuit'] / 10) + (df['ret_pct_weekend'] / 22)
 
 COLS_RESEAU = [c for c in df.columns if c.startswith('nb_ope_reseau_')]
 COLS_ETRANGERS = [c for c in COLS_RESEAU if any(x in c for x in ['jcb', 'amex', 'diners', 'cup'])]
@@ -15,89 +12,111 @@ df['pct_reseaux_etrangers'] = df[COLS_ETRANGERS].sum(axis=1) / (df['nb_ope_total
 
 df['log_ret_nb_horscos'] = np.log1p(df['ret_nb_horscos'])
 
-# CORRECTION (retour du 27/07) : pct_reseaux_etrangers est ecrase pres de 0 sur ce
-# reseau (tres peu de retraits etrangers en general - confirme par le metier). Un
-# z-score classique sur une variable aussi asymetrique ne peut jamais bien separer
-# les quelques GAB reellement touristiques du reste : les rares valeurs un peu plus
-# elevees ressortent comme des "extremes a exclure" plutot que comme un vrai groupe
-# coherent. Meme traitement que pour le volume : log1p() compresse l'echelle et
-# laisse le signal touristique, meme faible en valeur absolue, ressortir clairement
-# en RELATIF par rapport au reste du reseau.
+# 'un peu de retrait etranger' compte, pas besoin d'un taux enorme - mais
+# pct_reseaux_etrangers est ecrase pres de 0 (tres peu de retraits etrangers en
+# general, confirme par le metier). Le log ramene un GAB avec ne serait-ce que
+# quelques retraits JCB/Amex/CUP/Diners a un niveau VISIBLEMENT different de la
+# masse a 0%, sans avoir besoin d'un taux enorme pour se distinguer.
 df['log_pct_reseaux_etrangers'] = np.log1p(df['pct_reseaux_etrangers'])
 
-DEPARTEMENTS_TOURISTIQUES = {'06', '64', '73', '74'}
-DEPARTEMENTS_RURAUX_CONNUS = {'48', '23', '15'}
+print('Variables ajoutees : ratio_capture, cv_montant, concentration_reseau, '
+      'pct_reseaux_etrangers, log_pct_reseaux_etrangers, log_ret_nb_horscos')
+df[['ratio_capture', 'cv_montant', 'concentration_reseau',
+    'pct_reseaux_etrangers', 'log_pct_reseaux_etrangers']].describe().round(2)
 
-dept_str = df['code_postale_emplacement'].astype(str).str.zfill(5).str[:2]
-df['zone_touristique_connue'] = dept_str.isin(DEPARTEMENTS_TOURISTIQUES).astype(int)
-df['zone_rurale_connue'] = dept_str.isin(DEPARTEMENTS_RURAUX_CONNUS).astype(int)
 
-print('Variables comportementales ajoutees : ratio_capture, cv_montant, '
-      'score_horaires_atypiques, concentration_reseau, pct_reseaux_etrangers, '
-      'log_pct_reseaux_etrangers')
-print('Variables geographiques ajoutees : zone_touristique_connue ({} GAB x mois), '
-      'zone_rurale_connue ({} GAB x mois)'.format(
-    df['zone_touristique_connue'].sum(), df['zone_rurale_connue'].sum()))
-df[['ratio_capture', 'cv_montant', 'score_horaires_atypiques',
-    'concentration_reseau', 'pct_reseaux_etrangers', 'log_pct_reseaux_etrangers']].describe().round(2)
-Cellule 2 — "Selection des features de clustering..." (section 5)
-python
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Selection des features de clustering + exclusion des valeurs extremes + normalisation
 # ══════════════════════════════════════════════════════════════════════════════
-# 'pct_reseaux_etrangers' remplace par 'log_pct_reseaux_etrangers' (voir feature
-# engineering) - la version brute ecrasait le signal touristique au lieu de le
-# reveler. 'score_horaires_atypiques' toujours absent (redondant avec nuit+weekend).
+# Plus AUCUNE colonne geographique inventee - uniquement du comportement reel,
+# verifiable, sans aucune liste de departements devinee par nous.
 FEAT_CLUST = [
     'ret_pct_nuit', 'ret_pct_weekend', 'log_pct_reseaux_etrangers',
     'log_ret_nb_horscos', 'ret_montant_moyen', 'taux_capture_pct',
     'cv_montant', 'concentration_reseau',
-    'zone_touristique_connue', 'zone_rurale_connue',
 ]
 FEAT_CLUST = [f for f in FEAT_CLUST if f in df.columns]
 print('Features de clustering ({}) : {}'.format(len(FEAT_CLUST), FEAT_CLUST))
 
-# Exclusion des valeurs EXTREMES avant de choisir k et fitter le clustering des
-# FAMILLES - desormais sur la version LOG de pct_reseaux_etrangers (moins sensible
-# aux quelques GAB legerement plus touristiques, qui ne sont pas des incidents mais
-# un vrai profil a laisser dans la population normale).
-COLONNES_NUMERIQUES_POUR_EXCLUSION = [
-    f for f in FEAT_CLUST if f not in ('zone_touristique_connue', 'zone_rurale_connue')
-]
+X = df[FEAT_CLUST].fillna(0)
+
 masque_extreme_par_colonne = pd.DataFrame({
     col: df[col] > df[col].quantile(0.995)
-    for col in COLONNES_NUMERIQUES_POUR_EXCLUSION
+    for col in FEAT_CLUST
 })
 masque_population_normale = ~masque_extreme_par_colonne.any(axis=1)
 n_extremes = (~masque_population_normale).sum()
 if n_extremes > 0:
-    print('{} observations extremes exclues du CHOIX DE k (pas de l\'analyse) - '
-          'extreme sur au moins un des {} criteres (seuil : 99,5e percentile de '
-          'chaque critere).'.format(n_extremes, len(COLONNES_NUMERIQUES_POUR_EXCLUSION)))
+    print('{} observations extremes exclues du CHOIX DE k (99,5e percentile).'.format(n_extremes))
 
-X = df[FEAT_CLUST].fillna(0)
 scaler_clust = RobustScaler()
 scaler_clust.fit(X[masque_population_normale])
 X_scaled = scaler_clust.transform(X)
-Cellule 3 — "Nommage hybride..." (section 6)
-python
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# Nommage hybride : familles CANDIDATES (vocabulaire metier) si le match est bon,
-# sinon nommage automatique par traits distinctifs (comme avant)
+# Nommage hybride - 4 familles, chacune avec un critere ANCRE obligatoire
 # ══════════════════════════════════════════════════════════════════════════════
 VOCABULAIRE_TRAITS = {
-    'ret_pct_nuit':              ('Nocturne',                 'Diurne marque'),
-    'ret_pct_weekend':            ('Forte activite week-end',  'Activite semaine dominante'),
+    'ret_pct_nuit':              ('Nocturne', 'Diurne marque'),
+    'ret_pct_weekend':            ('Forte activite week-end', 'Activite semaine dominante'),
     'log_pct_reseaux_etrangers':  ('Touristique / reseaux etrangers', 'Clientele locale exclusive'),
-    'log_ret_nb_horscos':         ('Urbain forte activite',    'Rural / isole, faible activite'),
-    'ret_montant_moyen':      ('Montants eleves',          'Petits montants'),
+    'log_ret_nb_horscos':         ('Urbain forte activite', 'Faible activite'),
+    'ret_montant_moyen':      ('Montants eleves', 'Petits montants'),
     'taux_capture_pct':           ('Captures frequentes (a surveiller)', 'Captures rares'),
-    'cv_montant':                 ('Activite tres instable',   'Activite tres reguliere'),
-    'concentration_reseau':       ('Mono-reseau dominant',      'Reseaux diversifies'),
-    'zone_touristique_connue':    ('Situe en zone touristique connue', 'Hors zone touristique connue'),
-    'zone_rurale_connue':         ('Situe en zone rurale connue', 'Hors zone rurale connue'),
+    'cv_montant':                 ('Activite tres instable', 'Activite tres reguliere'),
+    'concentration_reseau':       ('Mono-reseau dominant', 'Reseaux diversifies'),
 }
 
+SEUIL_TRAIT_DISTINCTIF = 0.3
 SEUIL_ISOLE_VOLUME = 1.0
 SEUIL_PROXIMITE_MOYENNE = 0.4
 
@@ -106,37 +125,31 @@ FAMILLES_CANDIDATES = {
         ('log_ret_nb_horscos', 1), ('ret_montant_moyen', 1), ('cv_montant', -1),
     ],
     'Touristique': [
-        ('log_pct_reseaux_etrangers', 1), ('ret_pct_weekend', 1), ('zone_touristique_connue', 1),
+        ('log_pct_reseaux_etrangers', 1), ('ret_pct_weekend', 1), ('ret_pct_nuit', 1),
     ],
     'Isolee': [
-        ('log_ret_nb_horscos', -1, SEUIL_ISOLE_VOLUME), ('zone_rurale_connue', 1),
+        ('log_ret_nb_horscos', -1, SEUIL_ISOLE_VOLUME),
+        ('log_pct_reseaux_etrangers', -1), ('cv_montant', -1),
     ],
     'Intermediaire / Periurbaine': [
         ('log_ret_nb_horscos', 0, SEUIL_PROXIMITE_MOYENNE),
-        ('log_pct_reseaux_etrangers', 0, SEUIL_PROXIMITE_MOYENNE),
         ('ret_montant_moyen', 0, SEUIL_PROXIMITE_MOYENNE),
-    ],
-    'Atypique / Instable': [
-        ('taux_capture_pct', 1), ('cv_montant', 1),
+        ('log_pct_reseaux_etrangers', 0, SEUIL_PROXIMITE_MOYENNE),
     ],
 }
 SEUIL_MATCH_CANDIDATE = 2
 
-# NOUVEAU (retour du 27/07) : un critere OBLIGATOIRE (ancre) par famille. Sans ca,
-# un cluster peut porter le nom "Urbaine" en ne validant que montant+regularite,
-# meme avec un volume tres bas - le nom mentait sur la realite du cluster. Chaque
-# entree est une liste d'alternatives (logique OU) : au moins UNE doit etre
-# satisfaite pour que la famille reste eligible, sinon score force a (0, 0).
+# Critere ANCRE obligatoire : un cluster ne peut porter ce nom que si AU MOINS
+# une des alternatives listees est verifiee - empeche "Urbaine" d'apparaitre sans
+# volume eleve, ou "Touristique" sans le moindre signal de reseaux etrangers.
 CRITERES_OBLIGATOIRES = {
     'Urbaine': [('log_ret_nb_horscos', 1)],
+    'Touristique': [('log_pct_reseaux_etrangers', 1)],
     'Isolee': [('log_ret_nb_horscos', -1, SEUIL_ISOLE_VOLUME)],
-    'Touristique': [('zone_touristique_connue', 1), ('log_pct_reseaux_etrangers', 1)],
 }
 
 profil_moyen = df.groupby('cluster')[FEAT_CLUST].mean()
 z_profil = (profil_moyen - df[FEAT_CLUST].mean()) / df[FEAT_CLUST].std()
-
-SEUIL_TRAIT_DISTINCTIF = 0.3
 
 
 def nom_automatique(cid):
@@ -171,18 +184,17 @@ def score_famille_candidate(cid, nom_famille, criteres):
     ancres = CRITERES_OBLIGATOIRES.get(nom_famille)
     if ancres and not any(_critere_satisfait(z_row, a) for a in ancres):
         return (0, 0.0)
-    n_criteres_satisfaits = 0
-    somme_ecarts_absolus = 0.0
+    n_ok, somme = 0, 0.0
     for critere in criteres:
         if _critere_satisfait(z_row, critere):
-            n_criteres_satisfaits += 1
+            n_ok += 1
             feat = critere[0]
             if critere[1] == 0:
                 seuil = critere[2] if len(critere) > 2 else SEUIL_PROXIMITE_MOYENNE
-                somme_ecarts_absolus += (seuil - abs(z_row[feat]))
+                somme += (seuil - abs(z_row[feat]))
             else:
-                somme_ecarts_absolus += abs(z_row[feat])
-    return (n_criteres_satisfaits, somme_ecarts_absolus)
+                somme += abs(z_row[feat])
+    return (n_ok, somme)
 
 
 meilleur_candidat_par_cluster = {}
@@ -194,20 +206,19 @@ for cid in range(K_RETENU):
 
 ordre_affectation = sorted(range(K_RETENU),
                             key=lambda c: meilleur_candidat_par_cluster[c][1], reverse=True)
-noms_candidats_pris = set()
-NOMS_CLUSTERS = {}
+noms_pris, NOMS_CLUSTERS = set(), {}
 for cid in ordre_affectation:
     nom_candidat, score = meilleur_candidat_par_cluster[cid]
-    if score[0] >= SEUIL_MATCH_CANDIDATE and nom_candidat not in noms_candidats_pris:
+    if score[0] >= SEUIL_MATCH_CANDIDATE and nom_candidat not in noms_pris:
         NOMS_CLUSTERS[cid] = nom_candidat
-        noms_candidats_pris.add(nom_candidat)
+        noms_pris.add(nom_candidat)
     else:
         NOMS_CLUSTERS[cid] = nom_automatique(cid)
 
 noms_deja_utilises = set()
 for cid in range(K_RETENU):
-    nom = NOMS_CLUSTERS[cid]
-    nom_final, suffixe = nom, 2
+    nom, suffixe = NOMS_CLUSTERS[cid], 2
+    nom_final = nom
     while nom_final in noms_deja_utilises:
         nom_final = '{} ({})'.format(nom, suffixe)
         suffixe += 1
@@ -220,15 +231,6 @@ print('Familles retenues :')
 for cid, nom in NOMS_CLUSTERS.items():
     n_gab = df[df['cluster'] == cid]['num_automate'].nunique()
     candidat, score = meilleur_candidat_par_cluster[cid]
-    if nom == candidat:
-        origine = 'candidate (score {}/{}, somme ecarts={:.2f})'.format(
-            score[0], len(FAMILLES_CANDIDATES.get(candidat, [1])), score[1])
-    else:
-        origine = 'nommage automatique (aucune famille candidate assez proche)'
-    print('  Cluster {} -> "{}" ({} GAB concernes) - {}'.format(cid, nom, n_gab, origine))
-
-print('\nProfil moyen par famille :')
-(profil_moyen.rename(index=NOMS_CLUSTERS).round(2)
- .style.background_gradient(cmap='RdYlGn_r', axis=0)
- .format('{:.2f}')
- .set_caption('Profil moyen par famille (degrade par colonne : plus fonce = valeur la plus elevee)'))
+    origine = 'candidate (score {}/{})'.format(score[0], len(FAMILLES_CANDIDATES.get(candidat, [1]))) \
+        if nom == candidat else 'nommage automatique'
+    print('  Cluster {} -> "{}" ({} GAB) - {}'.format(cid, nom, n_gab, origine))
