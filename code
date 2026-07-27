@@ -1,33 +1,80 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# 9bis. Recapitulatif par famille (tableau croise dynamique)
+# Audit qualite
 # ══════════════════════════════════════════════════════════════════════════════
-COLS_RESEAUX_DETAIL = ['nb_ope_reseau_jcb', 'nb_ope_reseau_amex',
-                       'nb_ope_reseau_carte_diners_et_discovery', 'nb_ope_reseau_carte_cup']
-COLS_RESEAUX_DETAIL = [c for c in COLS_RESEAUX_DETAIL if c in df.columns]
+print('-' * 65)
+print('  AUDIT DE QUALITE DES DONNEES')
+print('-' * 65)
 
-AGREGATIONS_PAR_FAMILLE = {
-    'num_automate': pd.Series.nunique,
-    # 'code_postale_emplacement' est du texte (corrige plus haut) - le mode (valeur
-    # la plus frequente) remplace la mediane, qui n'a jamais eu de sens sur du texte.
-    'code_postale_emplacement': lambda s: s.mode().iloc[0] if not s.dropna().mode().empty else None,
-    'ret_pct_nuit': 'mean',
-    'ret_pct_weekend': 'mean',
-    'pct_reseaux_etrangers': 'mean',
-    'taux_capture_pct': 'mean',
-    'ret_nb_horscos': 'mean',
-    'ret_montant_moyen': 'mean',
-}
-for col in COLS_RESEAUX_DETAIL:
-    AGREGATIONS_PAR_FAMILLE[col] = 'mean'
+doublons = df.duplicated(subset=['num_automate', 'annee', 'mois']).sum()
+if doublons > 0:
+    print('[ATTENTION] {} doublons (num_automate, annee, mois) - supprimes.'.format(doublons))
+    df = df.drop_duplicates(subset=['num_automate', 'annee', 'mois'], keep='first')
 
-tableau_familles = df.groupby('famille').agg(AGREGATIONS_PAR_FAMILLE).reset_index()
-tableau_familles = tableau_familles.rename(columns={
-    'num_automate': 'Nombre de GAB', 'code_postale_emplacement': 'Code postal (mode)',
-    'ret_pct_nuit': '% Nocturne (moy.)', 'ret_pct_weekend': '% Week-end (moy.)',
-    'pct_reseaux_etrangers': '% Reseaux etrangers (moy.)', 'taux_capture_pct': 'Taux de capture % (moy.)',
-    'ret_nb_horscos': 'Volume retraits/mois (moy.)', 'ret_montant_moyen': 'Montant moyen EUR',
-})
-tableau_familles = tableau_familles.sort_values('Nombre de GAB', ascending=False).reset_index(drop=True)
+# ── Code postal : fige le type en TEXTE une bonne fois pour toutes, ici et nulle
+# part ailleurs dans le notebook. Toutes les cellules en aval (9bis, carte, export)
+# recevront systematiquement une chaine de 5 caracteres, jamais un flottant, jamais
+# un melange des deux - plus besoin de gerer ce cas colonne par colonne plus loin.
+def nettoyer_code_postal(valeur):
+    if pd.isnull(valeur):
+        return None
+    s = str(valeur).strip()
+    if s.endswith('.0'):
+        s = s[:-2]
+    s = s.zfill(5)
+    return s if s != '00000' else None
 
-print('Recapitulatif par famille :')
-tableau_familles.round(2)
+df['code_postale_emplacement'] = df['code_postale_emplacement'].apply(nettoyer_code_postal)
+
+# Reconstruction a partir des 5 premiers caracteres de num_automate, UNIQUEMENT
+# pour les lignes ou le code postal est absent apres nettoyage.
+masque_cp_absent = df['code_postale_emplacement'].isnull()
+n_cp_a_corriger = masque_cp_absent.sum()
+if n_cp_a_corriger > 0:
+    cp_depuis_num_automate = df.loc[masque_cp_absent, 'num_automate'].astype(str).str[:5]
+    df.loc[masque_cp_absent, 'code_postale_emplacement'] = cp_depuis_num_automate
+    print('[ATTENTION] {} lignes avec code postal manquant - reconstruit a partir '
+          'des 5 premiers caracteres de num_automate.'.format(n_cp_a_corriger))
+
+n_sans_code_postal = df['code_postale_emplacement'].isnull().sum()
+if n_sans_code_postal > 0:
+    print('[ATTENTION] {} lignes ({:.1f}%) toujours sans code postal exploitable - '
+          'laissees a None, PAS remplies par une fausse valeur.'.format(
+        n_sans_code_postal, n_sans_code_postal / len(df) * 100))
+
+# ── Montants stockes en centimes (verifie : moyennes a 13000-30000 "euros" par
+# retrait, physiquement impossible pour un retrait GAB).
+COLS_MONTANT = [c for c in df.columns if c.startswith('ret_montant') or c.startswith('montant_reseau')]
+for col in COLS_MONTANT:
+    if col in df.columns:
+        df[col] = df[col] / 100
+print('[ATTENTION] {} colonnes de montant divisees par 100 (stockage en centimes) : {}'.format(
+    len(COLS_MONTANT), COLS_MONTANT))
+
+# ── Comblement des autres valeurs manquantes par 0 - exclut explicitement le
+# code postal, longitude, latitude (jamais de faux 0 sur un identifiant).
+cols_numeriques = df.select_dtypes(include=[np.number]).columns.tolist()
+cols_identifiants_geo = ['longitude', 'latitude']
+cols_numeriques = [c for c in cols_numeriques if c not in cols_identifiants_geo]
+
+manquants = df[cols_numeriques].isnull().sum()
+if manquants.sum() > 0:
+    print('[ATTENTION] Valeurs manquantes comblees par 0 : {}'.format(
+        manquants[manquants > 0].to_dict()))
+    df[cols_numeriques] = df[cols_numeriques].fillna(0)
+
+for col in ['ret_pct_nuit', 'ret_pct_weekend', 'taux_capture_pct']:
+    if col in df.columns:
+        if col != 'taux_capture_pct':
+            n_hors_plage = ((df[col] < 0) | (df[col] > 100)).sum()
+            borne_haute = 100
+        else:
+            n_hors_plage = (df[col] < 0).sum()
+            borne_haute = df[col].quantile(0.999)
+        if n_hors_plage > 0:
+            print('[ATTENTION] {} valeurs de {} hors plage plausible - ecretees.'.format(n_hors_plage, col))
+        df[col] = df[col].clip(0, borne_haute)
+
+print('\nDataset pret : {:,} lignes x {} colonnes | {} GAB'.format(
+    df.shape[0], df.shape[1], df['num_automate'].nunique()))
+print('Type de code_postale_emplacement (fixe pour tout le reste du notebook) :',
+      df['code_postale_emplacement'].dtype)
