@@ -1,1 +1,1 @@
-df = df[~df['num_automate'].astype(str).str.startswith('OPT')]
+SEUIL_EXCLUSION_EXTREME = df['taux_capture_pct'].quantile(0.995)
