@@ -1,3 +1,51 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Audit qualite
+# ══════════════════════════════════════════════════════════════════════════════
+print('-' * 65)
+print('  AUDIT DE QUALITE DES DONNEES')
+print('-' * 65)
+
+doublons = df.duplicated(subset=['num_automate', 'annee', 'mois']).sum()
+if doublons > 0:
+    print('[ATTENTION] {} doublons (num_automate, annee, mois) - supprimes.'.format(doublons))
+    df = df.drop_duplicates(subset=['num_automate', 'annee', 'mois'], keep='first')
+
+# BUG CORRIGE (retour du 27/07) : code_postale_emplacement, longitude et latitude
+# sont de type float64, donc traites a tort comme des colonnes numeriques "normales"
+# ci-dessous - un code postal manquant se retrouvait rempli par 0, qui n'est PAS
+# une valeur plausible (contrairement a un taux ou un compteur, ou 0 a un sens).
+# Consequence verifiee : des GAB sans code postal (non matches dans le referentiel
+# cote SQL) se retrouvaient a "code postal = 0", ce qui cassait ensuite les criteres
+# geographiques (zone_touristique_connue / zone_rurale_connue) sans qu'on le voie.
 cols_numeriques = df.select_dtypes(include=[np.number]).columns.tolist()
-cols_numeriques = [c for c in cols_numeriques if c not in
-                   ('code_postale_emplacement', 'longitude', 'latitude')]
+cols_identifiants_geo = ['code_postale_emplacement', 'longitude', 'latitude']
+cols_numeriques = [c for c in cols_numeriques if c not in cols_identifiants_geo]
+
+manquants = df[cols_numeriques].isnull().sum()
+if manquants.sum() > 0:
+    print('[ATTENTION] Valeurs manquantes comblees par 0 : {}'.format(
+        manquants[manquants > 0].to_dict()))
+    df[cols_numeriques] = df[cols_numeriques].fillna(0)
+
+# Les identifiants geo restent en NaN s'ils sont manquants (pas de faux 0) - on
+# se contente de le signaler explicitement pour tracabilite.
+n_sans_code_postal = df['code_postale_emplacement'].isnull().sum()
+if n_sans_code_postal > 0:
+    print('[ATTENTION] {} lignes ({:.1f}%) sans code postal valide (GAB probablement '
+          'absent du referentiel cote SQL) - laissees en NaN, PAS remplies par 0.'.format(
+        n_sans_code_postal, n_sans_code_postal / len(df) * 100))
+
+for col in ['ret_pct_nuit', 'ret_pct_weekend', 'taux_capture_pct']:
+    if col in df.columns:
+        if col != 'taux_capture_pct':
+            n_hors_plage = ((df[col] < 0) | (df[col] > 100)).sum()
+            borne_haute = 100
+        else:
+            n_hors_plage = (df[col] < 0).sum()
+            borne_haute = df[col].quantile(0.999)
+        if n_hors_plage > 0:
+            print('[ATTENTION] {} valeurs de {} hors plage plausible - ecretees.'.format(n_hors_plage, col))
+        df[col] = df[col].clip(0, borne_haute)
+
+print('\nDataset pret : {:,} lignes x {} colonnes | {} GAB'.format(
+    df.shape[0], df.shape[1], df['num_automate'].nunique()))
