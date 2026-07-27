@@ -1,0 +1,1 @@
+df = df[~df['num_automate'].astype(str).str.startswith('OPT')]
