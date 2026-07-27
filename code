@@ -1,236 +1,69 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# Feature engineering
+# Audit qualite
 # ══════════════════════════════════════════════════════════════════════════════
-df['ratio_capture'] = df['cap_nb'] / (df['ret_nb_horscos'] + 1)
-df['cv_montant'] = df['ret_montant_stddev'] / (df['ret_montant_moyen'] + 0.01)
-
-COLS_RESEAU = [c for c in df.columns if c.startswith('nb_ope_reseau_')]
-COLS_ETRANGERS = [c for c in COLS_RESEAU if any(x in c for x in ['jcb', 'amex', 'diners', 'cup'])]
-df['nb_ope_total_reseau'] = df[COLS_RESEAU].sum(axis=1)
-df['concentration_reseau'] = df[COLS_RESEAU].max(axis=1) / (df['nb_ope_total_reseau'] + 1)
-df['pct_reseaux_etrangers'] = df[COLS_ETRANGERS].sum(axis=1) / (df['nb_ope_total_reseau'] + 1) * 100
-
-df['log_ret_nb_horscos'] = np.log1p(df['ret_nb_horscos'])
-
-# 'un peu de retrait etranger' compte, pas besoin d'un taux enorme - mais
-# pct_reseaux_etrangers est ecrase pres de 0 (tres peu de retraits etrangers en
-# general, confirme par le metier). Le log ramene un GAB avec ne serait-ce que
-# quelques retraits JCB/Amex/CUP/Diners a un niveau VISIBLEMENT different de la
-# masse a 0%, sans avoir besoin d'un taux enorme pour se distinguer.
-df['log_pct_reseaux_etrangers'] = np.log1p(df['pct_reseaux_etrangers'])
-
-print('Variables ajoutees : ratio_capture, cv_montant, concentration_reseau, '
-      'pct_reseaux_etrangers, log_pct_reseaux_etrangers, log_ret_nb_horscos')
-df[['ratio_capture', 'cv_montant', 'concentration_reseau',
-    'pct_reseaux_etrangers', 'log_pct_reseaux_etrangers']].describe().round(2)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Selection des features de clustering + exclusion des valeurs extremes + normalisation
-# ══════════════════════════════════════════════════════════════════════════════
-# Plus AUCUNE colonne geographique inventee - uniquement du comportement reel,
-# verifiable, sans aucune liste de departements devinee par nous.
-FEAT_CLUST = [
-    'ret_pct_nuit', 'ret_pct_weekend', 'log_pct_reseaux_etrangers',
-    'log_ret_nb_horscos', 'ret_montant_moyen', 'taux_capture_pct',
-    'cv_montant', 'concentration_reseau',
-]
-FEAT_CLUST = [f for f in FEAT_CLUST if f in df.columns]
-print('Features de clustering ({}) : {}'.format(len(FEAT_CLUST), FEAT_CLUST))
-
-X = df[FEAT_CLUST].fillna(0)
-
-masque_extreme_par_colonne = pd.DataFrame({
-    col: df[col] > df[col].quantile(0.995)
-    for col in FEAT_CLUST
-})
-masque_population_normale = ~masque_extreme_par_colonne.any(axis=1)
-n_extremes = (~masque_population_normale).sum()
-if n_extremes > 0:
-    print('{} observations extremes exclues du CHOIX DE k (99,5e percentile).'.format(n_extremes))
-
-scaler_clust = RobustScaler()
-scaler_clust.fit(X[masque_population_normale])
-X_scaled = scaler_clust.transform(X)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Nommage hybride - 4 familles, chacune avec un critere ANCRE obligatoire
-# ══════════════════════════════════════════════════════════════════════════════
-VOCABULAIRE_TRAITS = {
-    'ret_pct_nuit':              ('Nocturne', 'Diurne marque'),
-    'ret_pct_weekend':            ('Forte activite week-end', 'Activite semaine dominante'),
-    'log_pct_reseaux_etrangers':  ('Touristique / reseaux etrangers', 'Clientele locale exclusive'),
-    'log_ret_nb_horscos':         ('Urbain forte activite', 'Faible activite'),
-    'ret_montant_moyen':      ('Montants eleves', 'Petits montants'),
-    'taux_capture_pct':           ('Captures frequentes (a surveiller)', 'Captures rares'),
-    'cv_montant':                 ('Activite tres instable', 'Activite tres reguliere'),
-    'concentration_reseau':       ('Mono-reseau dominant', 'Reseaux diversifies'),
-}
-
-SEUIL_TRAIT_DISTINCTIF = 0.3
-SEUIL_ISOLE_VOLUME = 1.0
-SEUIL_PROXIMITE_MOYENNE = 0.4
-
-FAMILLES_CANDIDATES = {
-    'Urbaine': [
-        ('log_ret_nb_horscos', 1), ('ret_montant_moyen', 1), ('cv_montant', -1),
-    ],
-    'Touristique': [
-        ('log_pct_reseaux_etrangers', 1), ('ret_pct_weekend', 1), ('ret_pct_nuit', 1),
-    ],
-    'Isolee': [
-        ('log_ret_nb_horscos', -1, SEUIL_ISOLE_VOLUME),
-        ('log_pct_reseaux_etrangers', -1), ('cv_montant', -1),
-    ],
-    'Intermediaire / Periurbaine': [
-        ('log_ret_nb_horscos', 0, SEUIL_PROXIMITE_MOYENNE),
-        ('ret_montant_moyen', 0, SEUIL_PROXIMITE_MOYENNE),
-        ('log_pct_reseaux_etrangers', 0, SEUIL_PROXIMITE_MOYENNE),
-    ],
-}
-SEUIL_MATCH_CANDIDATE = 2
-
-# Critere ANCRE obligatoire : un cluster ne peut porter ce nom que si AU MOINS
-# une des alternatives listees est verifiee - empeche "Urbaine" d'apparaitre sans
-# volume eleve, ou "Touristique" sans le moindre signal de reseaux etrangers.
-CRITERES_OBLIGATOIRES = {
-    'Urbaine': [('log_ret_nb_horscos', 1)],
-    'Touristique': [('log_pct_reseaux_etrangers', 1)],
-    'Isolee': [('log_ret_nb_horscos', -1, SEUIL_ISOLE_VOLUME)],
-}
-
-profil_moyen = df.groupby('cluster')[FEAT_CLUST].mean()
-z_profil = (profil_moyen - df[FEAT_CLUST].mean()) / df[FEAT_CLUST].std()
-
-
-def nom_automatique(cid):
-    z_row = z_profil.loc[cid]
-    ordre = z_row.abs().sort_values(ascending=False).index
-    z_tries = z_row.reindex(ordre)
-    traits = [(feat, val) for feat, val in z_tries.items()
-              if abs(val) >= SEUIL_TRAIT_DISTINCTIF and feat in VOCABULAIRE_TRAITS][:2]
-    if not traits:
-        return 'Standard'
-    morceaux = []
-    for feat, val in traits:
-        libelle_haut, libelle_bas = VOCABULAIRE_TRAITS[feat]
-        morceaux.append(libelle_haut if val > 0 else libelle_bas)
-    return ' + '.join(morceaux)
-
-
-def _critere_satisfait(z_row, critere):
-    feat, signe_attendu = critere[0], critere[1]
-    if feat not in z_row.index:
-        return False
-    z_val = z_row[feat]
-    if signe_attendu == 0:
-        seuil = critere[2] if len(critere) > 2 else SEUIL_PROXIMITE_MOYENNE
-        return abs(z_val) < seuil
-    seuil = critere[2] if len(critere) > 2 else SEUIL_TRAIT_DISTINCTIF
-    return abs(z_val) >= seuil and np.sign(z_val) == signe_attendu
-
-
-def score_famille_candidate(cid, nom_famille, criteres):
-    z_row = z_profil.loc[cid]
-    ancres = CRITERES_OBLIGATOIRES.get(nom_famille)
-    if ancres and not any(_critere_satisfait(z_row, a) for a in ancres):
-        return (0, 0.0)
-    n_ok, somme = 0, 0.0
-    for critere in criteres:
-        if _critere_satisfait(z_row, critere):
-            n_ok += 1
-            feat = critere[0]
-            if critere[1] == 0:
-                seuil = critere[2] if len(critere) > 2 else SEUIL_PROXIMITE_MOYENNE
-                somme += (seuil - abs(z_row[feat]))
-            else:
-                somme += abs(z_row[feat])
-    return (n_ok, somme)
-
-
-meilleur_candidat_par_cluster = {}
-for cid in range(K_RETENU):
-    scores = {nom: score_famille_candidate(cid, nom, criteres)
-              for nom, criteres in FAMILLES_CANDIDATES.items()}
-    meilleur_nom = max(scores, key=scores.get)
-    meilleur_candidat_par_cluster[cid] = (meilleur_nom, scores[meilleur_nom])
-
-ordre_affectation = sorted(range(K_RETENU),
-                            key=lambda c: meilleur_candidat_par_cluster[c][1], reverse=True)
-noms_pris, NOMS_CLUSTERS = set(), {}
-for cid in ordre_affectation:
-    nom_candidat, score = meilleur_candidat_par_cluster[cid]
-    if score[0] >= SEUIL_MATCH_CANDIDATE and nom_candidat not in noms_pris:
-        NOMS_CLUSTERS[cid] = nom_candidat
-        noms_pris.add(nom_candidat)
-    else:
-        NOMS_CLUSTERS[cid] = nom_automatique(cid)
-
-noms_deja_utilises = set()
-for cid in range(K_RETENU):
-    nom, suffixe = NOMS_CLUSTERS[cid], 2
-    nom_final = nom
-    while nom_final in noms_deja_utilises:
-        nom_final = '{} ({})'.format(nom, suffixe)
-        suffixe += 1
-    noms_deja_utilises.add(nom_final)
-    NOMS_CLUSTERS[cid] = nom_final
-
-df['famille'] = df['cluster'].map(NOMS_CLUSTERS)
-
-print('Familles retenues :')
-for cid, nom in NOMS_CLUSTERS.items():
-    n_gab = df[df['cluster'] == cid]['num_automate'].nunique()
-    candidat, score = meilleur_candidat_par_cluster[cid]
-    origine = 'candidate (score {}/{})'.format(score[0], len(FAMILLES_CANDIDATES.get(candidat, [1]))) \
-        if nom == candidat else 'nommage automatique'
-    print('  Cluster {} -> "{}" ({} GAB) - {}'.format(cid, nom, n_gab, origine))
+print('-' * 65)
+print('  AUDIT DE QUALITE DES DONNEES')
+print('-' * 65)
+
+doublons = df.duplicated(subset=['num_automate', 'annee', 'mois']).sum()
+if doublons > 0:
+    print('[ATTENTION] {} doublons (num_automate, annee, mois) - supprimes.'.format(doublons))
+    df = df.drop_duplicates(subset=['num_automate', 'annee', 'mois'], keep='first')
+
+# CORRECTION - code postal a 0 ou manquant : on tente de le reconstruire a partir
+# des 5 premiers caracteres de num_automate (num_automate est une suite de chiffres
+# qui encode le code postal en tete, d'apres le metier). On ne le fait QUE pour les
+# lignes ou le code postal est manquant/a zero - jamais pour ecraser une vraie
+# valeur deja presente.
+code_postal_str = df['code_postale_emplacement'].astype(str).str.replace('.0', '', regex=False)
+masque_cp_absent = (
+    df['code_postale_emplacement'].isnull()
+    | (code_postal_str.isin(['0', '00000', 'nan']))
+)
+n_cp_a_corriger = masque_cp_absent.sum()
+if n_cp_a_corriger > 0:
+    cp_depuis_num_automate = df.loc[masque_cp_absent, 'num_automate'].astype(str).str[:5]
+    df.loc[masque_cp_absent, 'code_postale_emplacement'] = cp_depuis_num_automate
+    print('[ATTENTION] {} lignes avec code postal manquant/a zero - reconstruit a '
+          'partir des 5 premiers caracteres de num_automate.'.format(n_cp_a_corriger))
+
+# CORRECTION - montants stockes en centimes, pas en euros (verifie : des moyennes
+# a 13000-30000 "euros" par retrait sont physiquement impossibles pour un retrait
+# GAB - le facteur 100 confirme un stockage en centimes).
+COLS_MONTANT = [c for c in df.columns if c.startswith('ret_montant') or c.startswith('montant_reseau')]
+for col in COLS_MONTANT:
+    if col in df.columns:
+        df[col] = df[col] / 100
+print('[ATTENTION] {} colonnes de montant divisees par 100 (stockage en centimes) : {}'.format(
+    len(COLS_MONTANT), COLS_MONTANT))
+
+cols_numeriques = df.select_dtypes(include=[np.number]).columns.tolist()
+cols_identifiants_geo = ['code_postale_emplacement', 'longitude', 'latitude']
+cols_numeriques = [c for c in cols_numeriques if c not in cols_identifiants_geo]
+
+manquants = df[cols_numeriques].isnull().sum()
+if manquants.sum() > 0:
+    print('[ATTENTION] Valeurs manquantes comblees par 0 : {}'.format(
+        manquants[manquants > 0].to_dict()))
+    df[cols_numeriques] = df[cols_numeriques].fillna(0)
+
+n_sans_code_postal = df['code_postale_emplacement'].isnull().sum()
+if n_sans_code_postal > 0:
+    print('[ATTENTION] {} lignes ({:.1f}%) toujours sans code postal exploitable - '
+          'laissees en NaN, PAS remplies par 0.'.format(
+        n_sans_code_postal, n_sans_code_postal / len(df) * 100))
+
+for col in ['ret_pct_nuit', 'ret_pct_weekend', 'taux_capture_pct']:
+    if col in df.columns:
+        if col != 'taux_capture_pct':
+            n_hors_plage = ((df[col] < 0) | (df[col] > 100)).sum()
+            borne_haute = 100
+        else:
+            n_hors_plage = (df[col] < 0).sum()
+            borne_haute = df[col].quantile(0.999)
+        if n_hors_plage > 0:
+            print('[ATTENTION] {} valeurs de {} hors plage plausible - ecretees.'.format(n_hors_plage, col))
+        df[col] = df[col].clip(0, borne_haute)
+
+print('\nDataset pret : {:,} lignes x {} colonnes | {} GAB'.format(
+    df.shape[0], df.shape[1], df['num_automate'].nunique()))
