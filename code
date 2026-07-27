@@ -1,16 +1,3 @@
-print('=== DIAGNOSTIC SUR LE DATASET BRUT (avant tout traitement) ===')
-print('Nombre total de lignes :', len(df_brut))
-print()
-print('--- code_postale_emplacement ---')
-print('Type de la colonne :', df_brut['code_postale_emplacement'].dtype)
-print('Valeurs nulles (NaN) :', df_brut['code_postale_emplacement'].isnull().sum())
-print('Valeurs a zero (0 ou "0") :', (df_brut['code_postale_emplacement'].astype(str).isin(['0', '0.0'])).sum())
-print('Valeurs vides ("") :', (df_brut['code_postale_emplacement'].astype(str).str.strip() == '').sum())
-print('10 valeurs distinctes au hasard :', df_brut['code_postale_emplacement'].dropna().sample(min(10, len(df_brut))).tolist())
-print()
-for col in ['ret_montant_moyen', 'ret_pct_nuit', 'ret_pct_weekend', 'taux_capture_pct',
-            'nb_ope_reseau_jcb', 'nb_ope_reseau_amex']:
-    if col in df_brut.columns:
-        print('--- {} ---'.format(col))
-        print('  Nulles :', df_brut[col].isnull().sum(), '| A zero :', (df_brut[col] == 0).sum(),
-              '| Non-nulles et non-zero :', ((df_brut[col].notnull()) & (df_brut[col] != 0)).sum())
+cols_numeriques = df.select_dtypes(include=[np.number]).columns.tolist()
+cols_numeriques = [c for c in cols_numeriques if c not in
+                   ('code_postale_emplacement', 'longitude', 'latitude')]
