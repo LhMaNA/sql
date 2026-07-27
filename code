@@ -1,1 +1,44 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Selection des features de clustering + exclusion des valeurs extremes + normalisation
+# ══════════════════════════════════════════════════════════════════════════════
+# 'score_horaires_atypiques' retire de cette liste (retour du 27/07) : ce critere
+# est une combinaison lineaire de ret_pct_nuit et ret_pct_weekend, deja presents
+# individuellement ci-dessous - le garder revenait a compter ce signal deux fois
+# et lui donner un poids cache superieur aux autres criteres dans le calcul de
+# distance. Il reste calcule (section 4, feature engineering) pour compatibilite
+# mais n'est plus utilise dans le clustering.
+FEAT_CLUST = [
+    'ret_pct_nuit', 'ret_pct_weekend', 'pct_reseaux_etrangers',
+    'log_ret_nb_horscos', 'ret_montant_moyen', 'taux_capture_pct',
+    'cv_montant', 'concentration_reseau',
+    'zone_touristique_connue', 'zone_rurale_connue',
+]
+FEAT_CLUST = [f for f in FEAT_CLUST if f in df.columns]
+print('Features de clustering ({}) : {}'.format(len(FEAT_CLUST), FEAT_CLUST))
+
+# Exclusion des valeurs EXTREMES avant de choisir k et fitter le clustering des
+# FAMILLES : un incident ponctuel massif (taux de capture 10x la normale) cree un
+# point tres eloigne de tout qui, a lui seul, peut faire basculer le diagnostic
+# silhouette vers un decoupage "normal vs incident" au lieu de reveler les vraies
+# familles de comportement. Ces GAB extremes ne sont pas perdus : ils seront
+# quand meme rattaches a la famille dont ils sont le plus proches (section 7),
+# et rattraper par les visions 1 et 3 de toute facon.
+# BUG CORRIGE (retour du 27/07) : la formule IQR (q3 + 3*iqr) suppose une
+# distribution a peu pres symetrique. taux_capture_pct est tres ecrase pres de 0
+# (la grande majorite des GAB captent tres peu de cartes), donc l'IQR est minuscule
+# et le seuil calcule tombait a peine au-dessus de 1% - excluant plusieurs milliers
+# d'observations parfaitement NORMALES du diagnostic (verifie : 7503 lignes exclues
+# a tort sur le jeu de donnees reel). Un seuil par percentile est beaucoup plus
+# robuste pour une variable aussi asymetrique : on exclut uniquement le vrai top
+# 0,5% le plus extreme, quelle que soit la forme de la distribution.
 SEUIL_EXCLUSION_EXTREME = df['taux_capture_pct'].quantile(0.995)
+masque_population_normale = df['taux_capture_pct'] <= SEUIL_EXCLUSION_EXTREME
+n_extremes = (~masque_population_normale).sum()
+if n_extremes > 0:
+    print('{} observations extremes exclues du CHOIX DE k (pas de l\'analyse) - '
+          'taux_capture_pct > {:.1f}.'.format(n_extremes, SEUIL_EXCLUSION_EXTREME))
+
+X = df[FEAT_CLUST].fillna(0)
+scaler_clust = RobustScaler()
+scaler_clust.fit(X[masque_population_normale])   # scaler ajuste sur la population normale uniquement
+X_scaled = scaler_clust.transform(X)
