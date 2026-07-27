@@ -1,3 +1,33 @@
-# Fige le code postal en texte, UNE FOIS POUR TOUTES, pour eviter tout melange
-# float/string qui casse les agregations numeriques en aval (ex. 9bis).
-df['code_postale_emplacement'] = df['code_postale_emplacement'].astype(str).replace('nan', None)
+# ══════════════════════════════════════════════════════════════════════════════
+# 9bis. Recapitulatif par famille (tableau croise dynamique)
+# ══════════════════════════════════════════════════════════════════════════════
+COLS_RESEAUX_DETAIL = ['nb_ope_reseau_jcb', 'nb_ope_reseau_amex',
+                       'nb_ope_reseau_carte_diners_et_discovery', 'nb_ope_reseau_carte_cup']
+COLS_RESEAUX_DETAIL = [c for c in COLS_RESEAUX_DETAIL if c in df.columns]
+
+AGREGATIONS_PAR_FAMILLE = {
+    'num_automate': pd.Series.nunique,
+    # 'code_postale_emplacement' est du texte (corrige plus haut) - le mode (valeur
+    # la plus frequente) remplace la mediane, qui n'a jamais eu de sens sur du texte.
+    'code_postale_emplacement': lambda s: s.mode().iloc[0] if not s.dropna().mode().empty else None,
+    'ret_pct_nuit': 'mean',
+    'ret_pct_weekend': 'mean',
+    'pct_reseaux_etrangers': 'mean',
+    'taux_capture_pct': 'mean',
+    'ret_nb_horscos': 'mean',
+    'ret_montant_moyen': 'mean',
+}
+for col in COLS_RESEAUX_DETAIL:
+    AGREGATIONS_PAR_FAMILLE[col] = 'mean'
+
+tableau_familles = df.groupby('famille').agg(AGREGATIONS_PAR_FAMILLE).reset_index()
+tableau_familles = tableau_familles.rename(columns={
+    'num_automate': 'Nombre de GAB', 'code_postale_emplacement': 'Code postal (mode)',
+    'ret_pct_nuit': '% Nocturne (moy.)', 'ret_pct_weekend': '% Week-end (moy.)',
+    'pct_reseaux_etrangers': '% Reseaux etrangers (moy.)', 'taux_capture_pct': 'Taux de capture % (moy.)',
+    'ret_nb_horscos': 'Volume retraits/mois (moy.)', 'ret_montant_moyen': 'Montant moyen EUR',
+})
+tableau_familles = tableau_familles.sort_values('Nombre de GAB', ascending=False).reset_index(drop=True)
+
+print('Recapitulatif par famille :')
+tableau_familles.round(2)
