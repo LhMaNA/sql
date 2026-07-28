@@ -1,0 +1,44 @@
+Bonjour.
+
+Merci d'être présent aujourd'hui.
+
+Comme Hervé a dû te l'expliquer rapidement, cela fait maintenant plusieurs mois que nous travaillons, avec l'équipe Monétique et les équipes de Stéphanie Freindel, 
+sur un projet autour de la détection d'anomalies sur le comportement des distributeurs automatiques.
+
+Avant de commencer, je voudrais simplement préciser un point important.
+
+Aujourd'hui, nous n'allons pas vous présenter un produit final ou un outil complètement industrialisé.
+
+
+L'objectif de cette présentation est donc de vous montrer la démarche que nous avons suivie,
+les choix que nous avons faits, les premiers résultats obtenus et surtout
+de vous donner une vision de ce que ce projet pourrait apporter aux équipes métier une fois industrialisé.
+
+
+
+Au cours de ces dernières années, La Banque Postale exploitait un parc d'environ 6 000 distributeurs automatiques répartis sur l'ensemble du territoire.
+
+
+Certains sont installés dans des gares et enregistrent une activité très importante tout au long de la journée.
+
+D'autres se trouvent dans des zones rurales ou en montagne, où l'activité est naturellement plus faible.
+
+
+Autrement dit, chaque GAB a sa propre identité comportementale.
+
+
+Pour suivre cette activité, les équipes métier réalisent régulièrement des analyses sur l'ensemble du parc.
+
+Leur objectif est simple : repérer le plus tôt possible tout changement de comportement 
+Ce travail est indispensable.
+
+Mais il présente une difficulté majeure.
+
+
+cette surveillance est réalisée en grande partie de manière manuelle.
+
+Elle demande beaucoup de temps, beaucoup d'expertise et mobilise des ressources importantes.
+
+Conséquence : lorsqu'un distributeur commence progressivement à changer de comportement, ce changement n'est parfois détecté que deux à trois mois plus tard.
+
+Et dans certains cas, ce délai peut être critique.
