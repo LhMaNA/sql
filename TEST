@@ -1,44 +1,43 @@
-Bonjour.
+Subject: Projet détection GAB atypiques - besoin de votre confirmation sur quelques critères
 
-Merci d'être présent aujourd'hui.
+Bonjour,
 
-Comme Hervé a dû te l'expliquer rapidement, cela fait maintenant plusieurs mois que nous travaillons, avec l'équipe Monétique et les équipes de Stéphanie Freindel, 
-sur un projet autour de la détection d'anomalies sur le comportement des distributeurs automatiques.
+Dans le cadre du projet IA de détection de comportements atypiques sur les GAB, nous sommes en train de revoir en profondeur la construction de notre dataset d'entrée afin de fiabiliser le modèle. Nous avons besoin de votre expertise métier pour confirmer certains points avant de poursuivre.
 
-Avant de commencer, je voudrais simplement préciser un point important.
+Pour contexte, nous construisons une "fiche d'identité" journalière pour chaque GAB, qui agrège notamment :
+- le volume et les montants de retraits (jour/nuit, semaine/weekend, heures de pointe)
+- le nombre et les motifs de captures de carte (oubli, code confidentiel dépassé, carte perdue/volée, etc.)
+- la répartition des opérations par réseau (CB, Visa, Mastercard, Amex, JCB, Carte CUP, etc.)
+- la localisation du GAB (coordonnées, code postal, entité de gestion)
 
-Aujourd'hui, nous n'allons pas vous présenter un produit final ou un outil complètement industrialisé.
+Sur cette base, nous calculons pour chaque GAB des écarts par rapport à un comportement de référence, afin d'identifier les automates dont l'activité dévie significativement.
 
+Nous aurions besoin de votre aide sur deux points :
 
-L'objectif de cette présentation est donc de vous montrer la démarche que nous avons suivie,
-les choix que nous avons faits, les premiers résultats obtenus et surtout
-de vous donner une vision de ce que ce projet pourrait apporter aux équipes métier une fois industrialisé.
+1) Identification des cartes étrangères
+Nous étions initialement partis sur une définition "carte étrangère" = Amex, JCB et Carte CUP. En creusant, nous avons réalisé qu'une carte Amex peut tout à fait être émise par une banque française, ce qui rend ce réseau peu fiable comme indicateur de nationalité. Nous avons donc reconstruit nos critères ainsi :
+- "carte exotique" : regroupe les réseaux rares JCB, Carte CUP, Amex et Diners/Discovery
+- "carte étrangère" : restreint à JCB et Carte CUP uniquement, les deux seuls réseaux pour lesquels nous sommes sûrs qu'il s'agit systématiquement de cartes hors France
 
+Ce deuxième critère reste une approximation partielle, puisqu'il laisse de côté toutes les cartes étrangères émises sur des réseaux comme Visa, Mastercard ou Amex, qui existent aussi bien en France qu'à l'étranger.
 
+Une piste que nous envisageons pour aller plus loin serait d'utiliser le BIN de la carte (les premiers chiffres du numéro), qui permettent en principe de remonter à la banque émettrice et donc au pays d'émission via les plages de BIN. Nous avons conscience que cela ne donnera jamais une identification parfaitement précise, mais ce serait potentiellement plus fiable que notre approche actuelle basée uniquement sur le réseau.
 
-Au cours de ces dernières années, La Banque Postale exploitait un parc d'environ 6 000 distributeurs automatiques répartis sur l'ensemble du territoire.
+Qu'en pensez-vous ? Est-ce une piste exploitable de votre côté, ou avez-vous un autre moyen plus fiable d'identifier les retraits effectués par des cartes réellement hors France ?
 
+2) Cas concrets de comportements atypiques
+C'est le point le plus important pour nous actuellement. Pourriez-vous nous transmettre 5 à 10 cas concrets où vous avez identifié un comportement atypique sur un GAB à une période donnée, en précisant si possible :
+- le numéro d'automate concerné
+- la période observée
+- la raison pour laquelle ce comportement vous a semblé atypique
 
-Certains sont installés dans des gares et enregistrent une activité très importante tout au long de la journée.
+Ces cas serviront de base de validation : lors de la présentation finale du projet, nous reprendrons ces exemples pour vérifier si notre modèle est capable de détecter les mêmes comportements atypiques que ceux identifiés de votre côté. C'est un point clé pour valider la pertinence du modèle.
 
-D'autres se trouvent dans des zones rurales ou en montagne, où l'activité est naturellement plus faible.
+Si vous n'avez pas de cas précis en tête ou si certaines informations manquent (date exacte, numéro d'automate, etc.), n'hésitez pas à nous transmettre ce que vous avez, même partiel : cela nous sera tout de même utile.
 
+N'hésitez pas à revenir vers nous si vous avez besoin de précisions.
 
-Autrement dit, chaque GAB a sa propre identité comportementale.
+Merci d'avance pour votre aide,
 
-
-Pour suivre cette activité, les équipes métier réalisent régulièrement des analyses sur l'ensemble du parc.
-
-Leur objectif est simple : repérer le plus tôt possible tout changement de comportement 
-Ce travail est indispensable.
-
-Mais il présente une difficulté majeure.
-
-
-cette surveillance est réalisée en grande partie de manière manuelle.
-
-Elle demande beaucoup de temps, beaucoup d'expertise et mobilise des ressources importantes.
-
-Conséquence : lorsqu'un distributeur commence progressivement à changer de comportement, ce changement n'est parfois détecté que deux à trois mois plus tard.
-
-Et dans certains cas, ce délai peut être critique.
+Bien cordialement,
+Marya
