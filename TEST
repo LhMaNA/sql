@@ -1,43 +1,166 @@
-Subject: Projet détection GAB atypiques - besoin de votre confirmation sur quelques critères
+import dataiku
+from dataiku import spark as dkuspark
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import LongType, ArrayType, IntegerType
+from pyspark.sql.functions import udf, col, explode
+from pyspark import SparkConf
 
-Bonjour,
+# ==============================================================
+# TODO A CONFIRMER AVANT EXECUTION :
+#   Le nom exact de la colonne "pays" dans t_lbp_mon_bin8_h.
+#   Dans le code precedent (recuperation banque), la colonne
+#   utilisee etait pi_cdbqatt. La colonne pays a probablement
+#   un nom du meme style (ex: pi_cdpays, pi_pays, pi_cdiso...).
+#   Remplacer PI_CDPAYS_PLACEHOLDER ci-dessous par le vrai nom.
+# ==============================================================
+COL_PAYS = "PI_CDPAYS_PLACEHOLDER"
 
-Dans le cadre du projet IA de détection de comportements atypiques sur les GAB, nous sommes en train de revoir en profondeur la construction de notre dataset d'entrée afin de fiabiliser le modèle. Nous avons besoin de votre expertise métier pour confirmer certains points avant de poursuivre.
+# ------------------------------------------------------------
+# CONFIGURATION SPARK
+# ------------------------------------------------------------
+config = SparkConf().setAll([
+    ('spark.sql.autoBroadcastJoinThreshold', '-1'),
+    ('spark.sql.adaptive.enabled', 'true'),
+    ('spark.sql.adaptive.broadcastExchangeEnabled', 'false'),
+    ('spark.sql.join.preferSortMergeJoin', 'true'),
 
-Pour contexte, nous construisons une "fiche d'identité" journalière pour chaque GAB, qui agrège notamment :
-- le volume et les montants de retraits (jour/nuit, semaine/weekend, heures de pointe)
-- le nombre et les motifs de captures de carte (oubli, code confidentiel dépassé, carte perdue/volée, etc.)
-- la répartition des opérations par réseau (CB, Visa, Mastercard, Amex, JCB, Carte CUP, etc.)
-- la localisation du GAB (coordonnées, code postal, entité de gestion)
+    ('spark.executor.instances', '40'),
+    ('spark.executor.cores', '4'),
+    ('spark.executor.memory', '8g'),
+    ('spark.executor.memoryOverhead', '4g'),
+    ('spark.driver.memory', '8g'),
+    ('spark.driver.memoryOverhead', '2g'),
 
-Sur cette base, nous calculons pour chaque GAB des écarts par rapport à un comportement de référence, afin d'identifier les automates dont l'activité dévie significativement.
+    ('spark.sql.shuffle.partitions', '800'),
+    ('spark.sql.adaptive.coalescePartitions.enabled', 'true'),
+    ('spark.sql.adaptive.coalescePartitions.minPartitionNum', '400'),
+    ('spark.sql.adaptive.advisoryPartitionSizeInBytes', '64MB'),
+    ('spark.sql.adaptive.skewJoin.enabled', 'true'),
 
-Nous aurions besoin de votre aide sur deux points :
+    ('spark.serializer', 'org.apache.spark.serializer.KryoSerializer'),
+    ('spark.sql.shuffle.compress', 'true'),
+])
 
-1) Identification des cartes étrangères
-Nous étions initialement partis sur une définition "carte étrangère" = Amex, JCB et Carte CUP. En creusant, nous avons réalisé qu'une carte Amex peut tout à fait être émise par une banque française, ce qui rend ce réseau peu fiable comme indicateur de nationalité. Nous avons donc reconstruit nos critères ainsi :
-- "carte exotique" : regroupe les réseaux rares JCB, Carte CUP, Amex et Diners/Discovery
-- "carte étrangère" : restreint à JCB et Carte CUP uniquement, les deux seuls réseaux pour lesquels nous sommes sûrs qu'il s'agit systématiquement de cartes hors France
+spark = SparkSession.builder \
+    .config(conf=config) \
+    .enableHiveSupport() \
+    .getOrCreate()
 
-Ce deuxième critère reste une approximation partielle, puisqu'il laisse de côté toutes les cartes étrangères émises sur des réseaux comme Visa, Mastercard ou Amex, qui existent aussi bien en France qu'à l'étranger.
+# ------------------------------------------------------------
+# UDF — generation de sequence (pour exploser les plages BIN)
+# ------------------------------------------------------------
+def make_sequence(start, end):
+    if start is None or end is None:
+        return []
+    if end < start:
+        return []
+    return [int(x) for x in range(int(start), int(end) + 1)]
 
-Une piste que nous envisageons pour aller plus loin serait d'utiliser le BIN de la carte (les premiers chiffres du numéro), qui permettent en principe de remonter à la banque émettrice et donc au pays d'émission via les plages de BIN. Nous avons conscience que cela ne donnera jamais une identification parfaitement précise, mais ce serait potentiellement plus fiable que notre approche actuelle basée uniquement sur le réseau.
+sequence_udf = udf(make_sequence, ArrayType(LongType()))
 
-Qu'en pensez-vous ? Est-ce une piste exploitable de votre côté, ou avez-vous un autre moyen plus fiable d'identifier les retraits effectués par des cartes réellement hors France ?
+# ------------------------------------------------------------
+# ENTREES DU FLOW
+# ------------------------------------------------------------
+retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
+bin_raw     = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
 
-2) Cas concrets de comportements atypiques
-C'est le point le plus important pour nous actuellement. Pourriez-vous nous transmettre 5 à 10 cas concrets où vous avez identifié un comportement atypique sur un GAB à une période donnée, en précisant si possible :
-- le numéro d'automate concerné
-- la période observée
-- la raison pour laquelle ce comportement vous a semblé atypique
+retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
 
-Ces cas serviront de base de validation : lors de la présentation finale du projet, nous reprendrons ces exemples pour vérifier si notre modèle est capable de détecter les mêmes comportements atypiques que ceux identifiés de votre côté. C'est un point clé pour valider la pertinence du modèle.
+# ------------------------------------------------------------
+# PREPARATION TABLE RETRAITS
+# ------------------------------------------------------------
+retrait_df = retrait_raw.withColumn(
+    "bin_clean",
+    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX",
+           F.substring(F.col("num_carte"), 1, 6))
+     .otherwise(F.substring(F.col("num_carte"), 1, 8))
+).withColumn(
+    "bin_type",
+    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
+     .otherwise(F.lit(8))
+     .cast(IntegerType())
+)
 
-Si vous n'avez pas de cas précis en tête ou si certaines informations manquent (date exacte, numéro d'automate, etc.), n'hésitez pas à nous transmettre ce que vous avez, même partiel : cela nous sera tout de même utile.
+retrait_df = retrait_df.repartition(400, "bin_clean", "bin_type")
+retrait_df.cache()
 
-N'hésitez pas à revenir vers nous si vous avez besoin de précisions.
+# ------------------------------------------------------------
+# PREPARATION TABLE BINs (avec colonne pays)
+# ------------------------------------------------------------
+bin_filtered = bin_raw.filter(
+    (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
+).withColumn(
+    "bin6_min", F.substring(F.col("pi_trmin"), 1, 6).cast(LongType())
+).withColumn(
+    "bin6_max", F.substring(F.col("pi_trmax"), 1, 6).cast(LongType())
+).withColumn(
+    "bin8_min", F.substring(F.col("pi_trmin"), 1, 8).cast(LongType())
+).withColumn(
+    "bin8_max", F.substring(F.col("pi_trmax"), 1, 8).cast(LongType())
+).select(
+    "bin6_min", "bin6_max", "bin8_min", "bin8_max",
+    # Code pays sur 3 caracteres (ex: FRA, USA, BRA, CHL, RUS...)
+    F.upper(F.trim(F.col(COL_PAYS).cast("string"))).alias("pays")
+).filter(
+    F.col("bin6_min").isNotNull() & F.col("bin6_max").isNotNull() &
+    F.col("bin8_min").isNotNull() & F.col("bin8_max").isNotNull()
+)
 
-Merci d'avance pour votre aide,
+# ------------------------------------------------------------
+# EXPLOSION DES PLAGES BIN6 ET BIN8
+# ------------------------------------------------------------
+bin6_exploded = bin_filtered.select(
+    explode(sequence_udf(col("bin6_min"), col("bin6_max"))).alias("bin_val"),
+    F.lit(6).cast(IntegerType()).alias("bin_type_bin"),
+    "pays"
+)
 
-Bien cordialement,
-Marya
+bin8_exploded = bin_filtered.select(
+    explode(sequence_udf(col("bin8_min"), col("bin8_max"))).alias("bin_val"),
+    F.lit(8).cast(IntegerType()).alias("bin_type_bin"),
+    "pays"
+)
+
+bin_exploded = bin6_exploded.unionByName(bin8_exploded)
+bin_exploded = bin_exploded.withColumn(
+    "bin_val_str", F.col("bin_val").cast("string")
+)
+bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type_bin")
+bin_exploded.cache()
+
+# ------------------------------------------------------------
+# JOINTURE — on garde TOUTES les colonnes de retrait_df
+# ------------------------------------------------------------
+result = retrait_df.join(
+    bin_exploded,
+    (retrait_df["bin_clean"] == bin_exploded["bin_val_str"]) &
+    (retrait_df["bin_type"]  == bin_exploded["bin_type_bin"]),
+    how="left"
+).drop("bin_val_str", "bin_type_bin", "bin_val")
+
+# ------------------------------------------------------------
+# FLAG ETRANGER : pays different de FRA
+# NB : si le BIN n'a pas ete trouve dans la table de reference
+# (pays NULL), le flag reste NULL -> a traiter en aval comme
+# "inconnu", ne pas le confondre avec "francais"
+# ------------------------------------------------------------
+result = result.withColumn(
+    "flag_etranger",
+    F.when(F.col("pays").isNull(), F.lit(None).cast(IntegerType()))
+     .when(F.col("pays") == "FRA", F.lit(0))
+     .otherwise(F.lit(1))
+)
+
+result = result.withColumn("pays", F.col("pays").cast("string")) \
+               .withColumn("flag_etranger", F.col("flag_etranger").cast("int"))
+
+# ------------------------------------------------------------
+# SORTIE DU FLOW
+# ------------------------------------------------------------
+output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE_PAYS")
+
+# On force la recreation du schema en amont, avant l'ecriture
+output_dataset.write_schema_from_dataframe(result, dropAndCreate=True)
+
+dkuspark.write_with_schema(output_dataset, result)
