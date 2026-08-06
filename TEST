@@ -1,81 +1,83 @@
+import dataiku
+from dataiku import spark as dkuspark
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import LongType, IntegerType
+
+# TODO A CONFIRMER : nom exact de la colonne pays dans t_lbp_mon_bin8_h
+COL_PAYS = "PI_CDPAYS_PLACEHOLDER"
+
+spark = SparkSession.builder.enableHiveSupport().getOrCreate()
+
+retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
+bin_raw     = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
+
+retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
+
+# ------------------------------------------------------------
+# TABLE RETRAITS — toutes les colonnes conservees
+# ------------------------------------------------------------
 retrait_df = retrait_raw.withColumn(
     "bin_clean",
     F.when(F.substring(F.col("num_carte"), 7, 2) == "XX",
            F.substring(F.col("num_carte"), 1, 6))
      .otherwise(F.substring(F.col("num_carte"), 1, 8))
 ).withColumn(
-    "bin_clean_num",
-    F.col("bin_clean").cast(LongType())
+    "bin_clean_num", F.col("bin_clean").cast(LongType())
 ).withColumn(
     "bin_type",
     F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
-     .otherwise(F.lit(8))
-     .cast(IntegerType())
+     .otherwise(F.lit(8)).cast(IntegerType())
 )
- 
+
+retrait_6 = retrait_df.filter(F.col("bin_type") == 6)
+retrait_8 = retrait_df.filter(F.col("bin_type") == 8)
+
 # ------------------------------------------------------------
-# PREPARATION TABLE BINs (avec colonne pays) — PAS d'explosion
+# TABLE BINs
 # ------------------------------------------------------------
 bin_filtered = bin_raw.filter(
     (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
-).withColumn(
-    "bin6_min", F.substring(F.col("pi_trmin"), 1, 6).cast(LongType())
-).withColumn(
-    "bin6_max", F.substring(F.col("pi_trmax"), 1, 6).cast(LongType())
-).withColumn(
-    "bin8_min", F.substring(F.col("pi_trmin"), 1, 8).cast(LongType())
-).withColumn(
-    "bin8_max", F.substring(F.col("pi_trmax"), 1, 8).cast(LongType())
 ).select(
-    "bin6_min", "bin6_max", "bin8_min", "bin8_max",
-    # Code pays sur 3 caracteres (ex: FRA, USA, BRA, CHL, RUS...)
+    F.substring(F.col("pi_trmin"), 1, 6).cast(LongType()).alias("bin6_min"),
+    F.substring(F.col("pi_trmax"), 1, 6).cast(LongType()).alias("bin6_max"),
+    F.substring(F.col("pi_trmin"), 1, 8).cast(LongType()).alias("bin8_min"),
+    F.substring(F.col("pi_trmax"), 1, 8).cast(LongType()).alias("bin8_max"),
     F.upper(F.trim(F.col(COL_PAYS).cast("string"))).alias("pays")
-).filter(
-    F.col("bin6_min").isNotNull() & F.col("bin6_max").isNotNull() &
-    F.col("bin8_min").isNotNull() & F.col("bin8_max").isNotNull()
 )
- 
-# Table de reference BIN generalement petite (quelques milliers a
-# quelques centaines de milliers de lignes) -> broadcast pour eviter
-# un shuffle sur la grosse table de transactions
-bin_broadcast = F.broadcast(bin_filtered)
- 
+
+bin_6 = bin_filtered.select("bin6_min", "bin6_max", "pays")
+bin_8 = bin_filtered.select("bin8_min", "bin8_max", "pays")
+
 # ------------------------------------------------------------
-# JOINTURE PAR INTERVALLE
-# bin_type=6 -> comparaison sur bin6_min/bin6_max
-# bin_type=8 -> comparaison sur bin8_min/bin8_max
+# DEUX JOINTURES SEPAREES (pas de OR dans la condition)
 # ------------------------------------------------------------
-join_condition = (
-    (
-        (retrait_df["bin_type"] == 6) &
-        (retrait_df["bin_clean_num"] >= bin_broadcast["bin6_min"]) &
-        (retrait_df["bin_clean_num"] <= bin_broadcast["bin6_max"])
-    ) | (
-        (retrait_df["bin_type"] == 8) &
-        (retrait_df["bin_clean_num"] >= bin_broadcast["bin8_min"]) &
-        (retrait_df["bin_clean_num"] <= bin_broadcast["bin8_max"])
-    )
-)
- 
-result = retrait_df.join(bin_broadcast, join_condition, how="left")
- 
-# ------------------------------------------------------------
-# FLAG ETRANGER : pays different de FRA
-# NB : si le BIN n'a pas ete trouve dans la table de reference
-# (pays NULL), le flag reste NULL -> a traiter en aval comme
-# "inconnu", ne pas le confondre avec "francais"
-# ------------------------------------------------------------
+result_6 = retrait_6.join(
+    bin_6,
+    (retrait_6["bin_clean_num"] >= bin_6["bin6_min"]) &
+    (retrait_6["bin_clean_num"] <= bin_6["bin6_max"]),
+    how="left"
+).drop("bin6_min", "bin6_max")
+
+result_8 = retrait_8.join(
+    bin_8,
+    (retrait_8["bin_clean_num"] >= bin_8["bin8_min"]) &
+    (retrait_8["bin_clean_num"] <= bin_8["bin8_max"]),
+    how="left"
+).drop("bin8_min", "bin8_max")
+
+result = result_6.unionByName(result_8).drop("bin_clean_num")
+
 result = result.withColumn(
     "flag_etranger",
     F.when(F.col("pays").isNull(), F.lit(None).cast(IntegerType()))
      .when(F.col("pays") == "FRA", F.lit(0))
      .otherwise(F.lit(1))
 )
- 
-result = result.drop(
-    "bin_clean_num", "bin6_min", "bin6_max", "bin8_min", "bin8_max"
-).withColumn(
-    "pays", F.col("pays").cast("string")
-).withColumn(
-    "flag_etranger", F.col("flag_etranger").cast("int")
-)
+
+# ------------------------------------------------------------
+# SORTIE
+# ------------------------------------------------------------
+output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE_PAYS")
+output_dataset.write_schema_from_dataframe(result, dropAndCreate=True)
+dkuspark.write_with_schema(output_dataset, result)
