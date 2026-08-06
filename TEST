@@ -1,92 +1,20 @@
-import dataiku
-from dataiku import spark as dkuspark
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, ArrayType, IntegerType
-from pyspark.sql.functions import udf, col, explode
-from pyspark import SparkConf
-
-# ==============================================================
-# TODO A CONFIRMER AVANT EXECUTION :
-#   Le nom exact de la colonne "pays" dans t_lbp_mon_bin8_h.
-#   Dans le code precedent (recuperation banque), la colonne
-#   utilisee etait pi_cdbqatt. La colonne pays a probablement
-#   un nom du meme style (ex: pi_cdpays, pi_pays, pi_cdiso...).
-#   Remplacer PI_CDPAYS_PLACEHOLDER ci-dessous par le vrai nom.
-# ==============================================================
-COL_PAYS = "PI_CDPAYS_PLACEHOLDER"
-
-# ------------------------------------------------------------
-# CONFIGURATION SPARK
-# ------------------------------------------------------------
-config = SparkConf().setAll([
-    ('spark.sql.autoBroadcastJoinThreshold', '-1'),
-    ('spark.sql.adaptive.enabled', 'true'),
-    ('spark.sql.adaptive.broadcastExchangeEnabled', 'false'),
-    ('spark.sql.join.preferSortMergeJoin', 'true'),
-
-    ('spark.executor.instances', '40'),
-    ('spark.executor.cores', '4'),
-    ('spark.executor.memory', '8g'),
-    ('spark.executor.memoryOverhead', '4g'),
-    ('spark.driver.memory', '8g'),
-    ('spark.driver.memoryOverhead', '2g'),
-
-    ('spark.sql.shuffle.partitions', '800'),
-    ('spark.sql.adaptive.coalescePartitions.enabled', 'true'),
-    ('spark.sql.adaptive.coalescePartitions.minPartitionNum', '400'),
-    ('spark.sql.adaptive.advisoryPartitionSizeInBytes', '64MB'),
-    ('spark.sql.adaptive.skewJoin.enabled', 'true'),
-
-    ('spark.serializer', 'org.apache.spark.serializer.KryoSerializer'),
-    ('spark.sql.shuffle.compress', 'true'),
-])
-
-spark = SparkSession.builder \
-    .config(conf=config) \
-    .enableHiveSupport() \
-    .getOrCreate()
-
-# ------------------------------------------------------------
-# UDF — generation de sequence (pour exploser les plages BIN)
-# ------------------------------------------------------------
-def make_sequence(start, end):
-    if start is None or end is None:
-        return []
-    if end < start:
-        return []
-    return [int(x) for x in range(int(start), int(end) + 1)]
-
-sequence_udf = udf(make_sequence, ArrayType(LongType()))
-
-# ------------------------------------------------------------
-# ENTREES DU FLOW
-# ------------------------------------------------------------
-retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
-bin_raw     = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
-
-retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
-
-# ------------------------------------------------------------
-# PREPARATION TABLE RETRAITS
-# ------------------------------------------------------------
 retrait_df = retrait_raw.withColumn(
     "bin_clean",
     F.when(F.substring(F.col("num_carte"), 7, 2) == "XX",
            F.substring(F.col("num_carte"), 1, 6))
      .otherwise(F.substring(F.col("num_carte"), 1, 8))
 ).withColumn(
+    "bin_clean_num",
+    F.col("bin_clean").cast(LongType())
+).withColumn(
     "bin_type",
     F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
      .otherwise(F.lit(8))
      .cast(IntegerType())
 )
-
-retrait_df = retrait_df.repartition(400, "bin_clean", "bin_type")
-retrait_df.cache()
-
+ 
 # ------------------------------------------------------------
-# PREPARATION TABLE BINs (avec colonne pays)
+# PREPARATION TABLE BINs (avec colonne pays) — PAS d'explosion
 # ------------------------------------------------------------
 bin_filtered = bin_raw.filter(
     (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
@@ -106,39 +34,31 @@ bin_filtered = bin_raw.filter(
     F.col("bin6_min").isNotNull() & F.col("bin6_max").isNotNull() &
     F.col("bin8_min").isNotNull() & F.col("bin8_max").isNotNull()
 )
-
+ 
+# Table de reference BIN generalement petite (quelques milliers a
+# quelques centaines de milliers de lignes) -> broadcast pour eviter
+# un shuffle sur la grosse table de transactions
+bin_broadcast = F.broadcast(bin_filtered)
+ 
 # ------------------------------------------------------------
-# EXPLOSION DES PLAGES BIN6 ET BIN8
+# JOINTURE PAR INTERVALLE
+# bin_type=6 -> comparaison sur bin6_min/bin6_max
+# bin_type=8 -> comparaison sur bin8_min/bin8_max
 # ------------------------------------------------------------
-bin6_exploded = bin_filtered.select(
-    explode(sequence_udf(col("bin6_min"), col("bin6_max"))).alias("bin_val"),
-    F.lit(6).cast(IntegerType()).alias("bin_type_bin"),
-    "pays"
+join_condition = (
+    (
+        (retrait_df["bin_type"] == 6) &
+        (retrait_df["bin_clean_num"] >= bin_broadcast["bin6_min"]) &
+        (retrait_df["bin_clean_num"] <= bin_broadcast["bin6_max"])
+    ) | (
+        (retrait_df["bin_type"] == 8) &
+        (retrait_df["bin_clean_num"] >= bin_broadcast["bin8_min"]) &
+        (retrait_df["bin_clean_num"] <= bin_broadcast["bin8_max"])
+    )
 )
-
-bin8_exploded = bin_filtered.select(
-    explode(sequence_udf(col("bin8_min"), col("bin8_max"))).alias("bin_val"),
-    F.lit(8).cast(IntegerType()).alias("bin_type_bin"),
-    "pays"
-)
-
-bin_exploded = bin6_exploded.unionByName(bin8_exploded)
-bin_exploded = bin_exploded.withColumn(
-    "bin_val_str", F.col("bin_val").cast("string")
-)
-bin_exploded = bin_exploded.repartition(400, "bin_val_str", "bin_type_bin")
-bin_exploded.cache()
-
-# ------------------------------------------------------------
-# JOINTURE — on garde TOUTES les colonnes de retrait_df
-# ------------------------------------------------------------
-result = retrait_df.join(
-    bin_exploded,
-    (retrait_df["bin_clean"] == bin_exploded["bin_val_str"]) &
-    (retrait_df["bin_type"]  == bin_exploded["bin_type_bin"]),
-    how="left"
-).drop("bin_val_str", "bin_type_bin", "bin_val")
-
+ 
+result = retrait_df.join(bin_broadcast, join_condition, how="left")
+ 
 # ------------------------------------------------------------
 # FLAG ETRANGER : pays different de FRA
 # NB : si le BIN n'a pas ete trouve dans la table de reference
@@ -151,16 +71,11 @@ result = result.withColumn(
      .when(F.col("pays") == "FRA", F.lit(0))
      .otherwise(F.lit(1))
 )
-
-result = result.withColumn("pays", F.col("pays").cast("string")) \
-               .withColumn("flag_etranger", F.col("flag_etranger").cast("int"))
-
-# ------------------------------------------------------------
-# SORTIE DU FLOW
-# ------------------------------------------------------------
-output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE_PAYS")
-
-# On force la recreation du schema en amont, avant l'ecriture
-output_dataset.write_schema_from_dataframe(result, dropAndCreate=True)
-
-dkuspark.write_with_schema(output_dataset, result)
+ 
+result = result.drop(
+    "bin_clean_num", "bin6_min", "bin6_max", "bin8_min", "bin8_max"
+).withColumn(
+    "pays", F.col("pays").cast("string")
+).withColumn(
+    "flag_etranger", F.col("flag_etranger").cast("int")
+)
