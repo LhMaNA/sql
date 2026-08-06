@@ -2,82 +2,72 @@ import dataiku
 from dataiku import spark as dkuspark
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, IntegerType
 
 # TODO A CONFIRMER : nom exact de la colonne pays dans t_lbp_mon_bin8_h
 COL_PAYS = "PI_CDPAYS_PLACEHOLDER"
 
 spark = SparkSession.builder.enableHiveSupport().getOrCreate()
 
-retrait_raw = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
-bin_raw     = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
+retrait = dkuspark.get_dataframe(spark, dataiku.Dataset("ds_..."))
+bin_ref = dkuspark.get_dataframe(spark, dataiku.Dataset("t_lbp_mon_bin8_h"))
 
-retrait_raw = retrait_raw.filter(F.col("annee").isin(2025, 2026))
+retrait = retrait.filter(F.col("annee").isin(2025, 2026))
 
-# ------------------------------------------------------------
-# TABLE RETRAITS — toutes les colonnes conservees
-# ------------------------------------------------------------
-retrait_df = retrait_raw.withColumn(
+# Colonne bin_clean + bin_type
+retrait = retrait.withColumn(
     "bin_clean",
-    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX",
-           F.substring(F.col("num_carte"), 1, 6))
+    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.substring(F.col("num_carte"), 1, 6))
      .otherwise(F.substring(F.col("num_carte"), 1, 8))
-).withColumn(
-    "bin_clean_num", F.col("bin_clean").cast(LongType())
-).withColumn(
+)
+retrait = retrait.withColumn("bin_clean", F.col("bin_clean").cast("long"))
+
+retrait = retrait.withColumn(
     "bin_type",
-    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6))
-     .otherwise(F.lit(8)).cast(IntegerType())
+    F.when(F.substring(F.col("num_carte"), 7, 2) == "XX", F.lit(6)).otherwise(F.lit(8))
 )
 
-retrait_6 = retrait_df.filter(F.col("bin_type") == 6)
-retrait_8 = retrait_df.filter(F.col("bin_type") == 8)
-
-# ------------------------------------------------------------
-# TABLE BINs
-# ------------------------------------------------------------
-bin_filtered = bin_raw.filter(
+# Table BIN filtree + plages en long
+bin_ref = bin_ref.filter(
     (F.col("pi_daeffet") < "2026-01-01") & (F.col("pi_dafin") > "2025-12-31")
-).select(
-    F.substring(F.col("pi_trmin"), 1, 6).cast(LongType()).alias("bin6_min"),
-    F.substring(F.col("pi_trmax"), 1, 6).cast(LongType()).alias("bin6_max"),
-    F.substring(F.col("pi_trmin"), 1, 8).cast(LongType()).alias("bin8_min"),
-    F.substring(F.col("pi_trmax"), 1, 8).cast(LongType()).alias("bin8_max"),
-    F.upper(F.trim(F.col(COL_PAYS).cast("string"))).alias("pays")
 )
+bin_ref = bin_ref.withColumn("bin6_min", F.substring(F.col("pi_trmin"), 1, 6).cast("long"))
+bin_ref = bin_ref.withColumn("bin6_max", F.substring(F.col("pi_trmax"), 1, 6).cast("long"))
+bin_ref = bin_ref.withColumn("bin8_min", F.substring(F.col("pi_trmin"), 1, 8).cast("long"))
+bin_ref = bin_ref.withColumn("bin8_max", F.substring(F.col("pi_trmax"), 1, 8).cast("long"))
+bin_ref = bin_ref.withColumn("pays", F.upper(F.trim(F.col(COL_PAYS).cast("string"))))
 
-bin_6 = bin_filtered.select("bin6_min", "bin6_max", "pays")
-bin_8 = bin_filtered.select("bin8_min", "bin8_max", "pays")
-
-# ------------------------------------------------------------
-# DEUX JOINTURES SEPAREES (pas de OR dans la condition)
-# ------------------------------------------------------------
+# Jointure bin6
+retrait_6 = retrait.filter(F.col("bin_type") == 6)
+bin_6 = bin_ref.select("bin6_min", "bin6_max", "pays")
 result_6 = retrait_6.join(
     bin_6,
-    (retrait_6["bin_clean_num"] >= bin_6["bin6_min"]) &
-    (retrait_6["bin_clean_num"] <= bin_6["bin6_max"]),
-    how="left"
-).drop("bin6_min", "bin6_max")
+    (retrait_6["bin_clean"] >= bin_6["bin6_min"]) & (retrait_6["bin_clean"] <= bin_6["bin6_max"]),
+    "left"
+)
+result_6 = result_6.drop("bin6_min", "bin6_max")
 
+# Jointure bin8
+retrait_8 = retrait.filter(F.col("bin_type") == 8)
+bin_8 = bin_ref.select("bin8_min", "bin8_max", "pays")
 result_8 = retrait_8.join(
     bin_8,
-    (retrait_8["bin_clean_num"] >= bin_8["bin8_min"]) &
-    (retrait_8["bin_clean_num"] <= bin_8["bin8_max"]),
-    how="left"
-).drop("bin8_min", "bin8_max")
+    (retrait_8["bin_clean"] >= bin_8["bin8_min"]) & (retrait_8["bin_clean"] <= bin_8["bin8_max"]),
+    "left"
+)
+result_8 = result_8.drop("bin8_min", "bin8_max")
 
-result = result_6.unionByName(result_8).drop("bin_clean_num")
+# Union
+result = result_6.unionByName(result_8)
 
+# Flag etranger
 result = result.withColumn(
     "flag_etranger",
-    F.when(F.col("pays").isNull(), F.lit(None).cast(IntegerType()))
+    F.when(F.col("pays").isNull(), F.lit(None).cast("int"))
      .when(F.col("pays") == "FRA", F.lit(0))
      .otherwise(F.lit(1))
 )
 
-# ------------------------------------------------------------
-# SORTIE
-# ------------------------------------------------------------
-output_dataset = dataiku.Dataset("NOM_DATASET_SORTIE_PAYS")
-output_dataset.write_schema_from_dataframe(result, dropAndCreate=True)
-dkuspark.write_with_schema(output_dataset, result)
+# Sortie
+output = dataiku.Dataset("NOM_DATASET_SORTIE_PAYS")
+output.write_schema_from_dataframe(result, dropAndCreate=True)
+dkuspark.write_with_schema(output, result)
